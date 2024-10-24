@@ -1,14 +1,12 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Dict, Any
 import itertools
 import wandb
-import numpy as np
-from utils.general_utils import calculate_MMCS
 import math
+from utils.general_utils import calculate_MMCS
 
 
 class SAETrainer:
@@ -22,6 +20,7 @@ class SAETrainer:
         self.true_features = true_features.to(device) if true_features is not None else None
         self.scalers = [GradScaler() for _ in self.base_model.encoders]
         self.ensemble_consistency_weight = hyperparameters.get("ensemble_consistency_weight", 0.1)
+        self.reinit_threshold = hyperparameters.get("reinit_threshold", 3.0)
         self.use_amp = hyperparameters.get("use_amp", True)
         self.warmup_steps = hyperparameters.get("warmup_steps", 100)
         self.current_step = 0
@@ -48,6 +47,26 @@ class SAETrainer:
         warmup_factor = self.get_warmup_factor()
         return unweighted_loss * self.ensemble_consistency_weight * warmup_factor
 
+    def reinitialize_sae_weights(self, sae_index: int):
+        encoder = self.base_model.encoders[sae_index]
+        dtype, device = encoder.weight.dtype, encoder.weight.device
+        nn.init.orthogonal_(encoder.weight)
+        nn.init.zeros_(encoder.bias)
+        encoder.weight.data = encoder.weight.data.to(dtype=dtype, device=device)
+        encoder.bias.data = encoder.bias.data.to(dtype=dtype, device=device)
+        self.optimizers[sae_index] = torch.optim.Adam(encoder.parameters(), lr=self.config["learning_rate"])
+        self.scalers[sae_index] = GradScaler()
+
+    def check_reinit_condition(self, encoded_activations: List[torch.Tensor]) -> List[bool]:
+        reinit_flags = []
+        for activations in encoded_activations:
+            activation_rates = (activations != 0).float().mean(dim=0)
+            target_rates = torch.full_like(activation_rates, 0.0625)
+            relative_diff = torch.abs(activation_rates - target_rates) / target_rates
+            sensitive_diff = relative_diff.mean()
+            reinit_flags.append(sensitive_diff.item() > self.reinit_threshold)
+        return reinit_flags
+
     def train(self, train_loader: DataLoader, num_epochs: int = 1):
         for epoch in range(num_epochs):
             for batch_num, (X_batch,) in enumerate(train_loader):
@@ -56,9 +75,22 @@ class SAETrainer:
 
                 with autocast(enabled=self.use_amp):
                     outputs, activations = self.base_model.forward_with_encoded(X_batch)
+                    outputs = [output.to(self.device) for output in outputs]
                     encoder_weights = [encoder.weight.t() for encoder in self.base_model.encoders]
                     consensus_loss = self.calculate_consensus_loss(encoder_weights)
                     reconstruction_losses = [self.criterion(output, X_batch) for output in outputs]
+
+                reinit_flags = self.check_reinit_condition(activations)
+                for i, flag in enumerate(reinit_flags):
+                    if flag:
+                        print(f"Reinitializing SAE {i} weights due to reinit condition.")
+                        self.reinitialize_sae_weights(i)
+
+                if any(reinit_flags):
+                    with autocast(enabled=self.use_amp):
+                        outputs, activations = self.base_model.forward_with_encoded(X_batch)
+                        outputs = [output.to(self.device) for output in outputs]
+                        reconstruction_losses = [self.criterion(output, X_batch) for output in outputs]
 
                 total_losses = [rec_loss + consensus_loss for rec_loss in reconstruction_losses]
 
@@ -81,3 +113,4 @@ class SAETrainer:
             self.save_model(epoch + 1)
             if self.true_features is not None:
                 self.save_true_features()
+
