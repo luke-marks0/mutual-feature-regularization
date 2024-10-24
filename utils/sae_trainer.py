@@ -20,7 +20,7 @@ class SAETrainer:
         self.true_features = true_features.to(device) if true_features is not None else None
         self.scalers = [GradScaler() for _ in self.base_model.encoders]
         self.ensemble_consistency_weight = hyperparameters.get("ensemble_consistency_weight", 0.1)
-        self.reinit_threshold = hyperparameters.get("reinit_threshold", 3.0)
+        self.reinit_threshold = hyperparameters.get("reinit_threshold", 1.0)
         self.use_amp = hyperparameters.get("use_amp", True)
         self.warmup_steps = hyperparameters.get("warmup_steps", 100)
         self.current_step = 0

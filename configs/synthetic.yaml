@@ -1,9 +1,9 @@
 experiment: synthetic
 num_epochs: 1
 training_batch_size: 10000
-learning_rate: [0.001]
+learning_rate: [0.01]
 input_size: [256]
-k_sparse: [36]
+k_sparse: [32]
 hidden_size: [512]
 num_saes: [2]
-ensemble_consistency_weight: [3]
+ensemble_consistency_weight: [0]
