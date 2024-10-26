@@ -17,7 +17,7 @@ class SparseAutoencoder(nn.Module):
         ])
         self.apply(self._init_weights)
         base_k_sparse = self.config["k_sparse"]
-        self.k_sparse_values = [base_k_sparse * (i + 1) for i in range(self.config.get("num_saes", 1))]
+        self.k_sparse_values = [base_k_sparse * (1) for i in range(self.config.get("num_saes", 1))]
 
     def _init_weights(self, m: nn.Module) -> None:
         if isinstance(m, nn.Linear):

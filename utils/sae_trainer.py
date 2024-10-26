@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 import itertools
 import wandb
 import math
@@ -19,8 +19,8 @@ class SAETrainer:
         self.criterion = nn.MSELoss()
         self.true_features = true_features.to(device) if true_features is not None else None
         self.scalers = [GradScaler() for _ in self.base_model.encoders]
-        self.ensemble_consistency_weight = hyperparameters.get("ensemble_consistency_weight", 0.1)
-        self.reinit_threshold = hyperparameters.get("reinit_threshold", 1.0)
+        self.ensemble_consistency_weight = hyperparameters.get("ensemble_consistency_weight", 1)
+        self.reinit_threshold = hyperparameters.get("reinit_threshold", 2.5)
         self.use_amp = hyperparameters.get("use_amp", True)
         self.warmup_steps = hyperparameters.get("warmup_steps", 100)
         self.current_step = 0
@@ -57,15 +57,17 @@ class SAETrainer:
         self.optimizers[sae_index] = torch.optim.Adam(encoder.parameters(), lr=self.config["learning_rate"])
         self.scalers[sae_index] = GradScaler()
 
-    def check_reinit_condition(self, encoded_activations: List[torch.Tensor]) -> List[bool]:
+    def check_reinit_condition(self, encoded_activations: List[torch.Tensor]) -> Tuple[List[bool], List[float]]:
         reinit_flags = []
+        feature_activity = []
         for activations in encoded_activations:
             activation_rates = (activations != 0).float().mean(dim=0)
             target_rates = torch.full_like(activation_rates, 0.0625)
             relative_diff = torch.abs(activation_rates - target_rates) / target_rates
-            sensitive_diff = relative_diff.mean()
+            sensitive_diff = torch.pow(relative_diff, 3).mean()
+            feature_activity.append(sensitive_diff.item())
             reinit_flags.append(sensitive_diff.item() > self.reinit_threshold)
-        return reinit_flags
+        return reinit_flags, feature_activity
 
     def train(self, train_loader: DataLoader, num_epochs: int = 1):
         for epoch in range(num_epochs):
@@ -80,7 +82,7 @@ class SAETrainer:
                     consensus_loss = self.calculate_consensus_loss(encoder_weights)
                     reconstruction_losses = [self.criterion(output, X_batch) for output in outputs]
 
-                reinit_flags = self.check_reinit_condition(activations)
+                reinit_flags, feature_activity = self.check_reinit_condition(activations)
                 for i, flag in enumerate(reinit_flags):
                     if flag:
                         print(f"Reinitializing SAE {i} weights due to reinit condition.")
@@ -107,10 +109,10 @@ class SAETrainer:
                 wandb.log({
                     "Consensus_loss": consensus_loss,
                     **{f"SAE_{i}_reconstruction_loss": rec_loss.item() for i, rec_loss in enumerate(reconstruction_losses)},
+                    **{f"Feature_activity_SAE_{i}": scalar for i, scalar in enumerate(feature_activity)},
                     **(({f"MMCS_SAE_{i}": mmcs_i for i, mmcs_i in enumerate(mmcs)}) if self.true_features is not None else {})
                 })
 
             self.save_model(epoch + 1)
             if self.true_features is not None:
                 self.save_true_features()
-
