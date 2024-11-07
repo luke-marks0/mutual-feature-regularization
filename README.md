@@ -59,9 +59,9 @@ python main.py --config configs/eeg.yaml
 
 If you use this code or refer to the paper, please cite it as follows:
 ```bibtex
-@misc{marks2024eSAEinterpretability,
+@misc{marks2024enhancinginterpretability,
       title={Enhancing Neural Network Interpretability with Feature-Aligned Sparse Autoencoders}, 
-      author={Luke Marks and Alisdair Paren and David Krueger and Fazl Barez},
+      author={Luke Marks and Alasdair Paren and David Krueger and Fazl Barez},
       year={2024},
       eprint={2411.01220},
       archivePrefix={arXiv},
